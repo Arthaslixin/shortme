@@ -8,6 +8,8 @@ ShortMe is a url shortening service written in Golang.
 It is with high performance and scalable.  
 ShortMe is ready to be used in production. Have fun with it. :)
 
+Replace Mysql to Mongo by Doodod.
+
 ### Features
 ----
 * Convert same long urls to different short urls.
