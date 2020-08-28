@@ -132,7 +132,7 @@ Projects that use `short-me`.
 #### Dependency
 ----
 * Golang
-* Mysql
+* Mongo
 
 #### Compile
 ----
@@ -145,45 +145,12 @@ cd shortme
 make build
 ```
 
-#### Database Schema
-----
-We use two databases. Import the two schemas.
-* shortme
-    * Store short url info
-    * [shortme schema](schema/shortme.sql)
-* sequence
-    * sequence generator
-    * [sequence schema](schema/sequence.sql)
-
 #### Configuration
 ----
 ```
 [http]
 # Listen address
 listen = "0.0.0.0:3030"
-
-[sequence_db]
-# Mysql sequence generator DSN
-dsn = "sequence:sequence@tcp(127.0.0.1:3306)/sequence"
-
-# Mysql connection pool max idle connection
-max_idle_conns = 4
-
-# Mysql connection pool max open connection
-max_open_conns = 4
-
-[short_db]
-# Mysql short service read db DSN
-read_dsn = "shortme_w:shortme_w@tcp(127.0.0.1:3306)/shortme"
-
-# Mysql short service write db DSN
-write_dsn = "shortme_r:shortme_r@tcp(127.0.0.1:3306)/shortme"
-
-# Mysql connection pool max idle connection
-max_idle_conns = 8
-
-# Mysql connection pool max open connection
-max_open_conns = 8
 
 [common]
 # short urls that will be filtered to use
@@ -198,19 +165,6 @@ domain_name = "short.me:3030"
 # Short url service schema: http or https.
 schema = "http"
 ```
-#### Capacity
-----
-We use an Mysql `unsigned bigint` type to store the sequence counter. According
- to the [Mysql doc](http://dev.mysql.com/doc/refman/5.7/en/integer-types.html)
- we can get `18446744073709551616` different integers.
- However, according to [Golang doc about `LastInsertId`](https://golang.org/pkg/database/sql/driver/#RowsAffected.LastInsertId)
- the returned auto increment integer can only be `int64` which will make the
- sequence smaller than `uint64`. Even through, we can still get
- `9223372036854775808` different integers and this will be large enough
- for most service.  
-
-Supposing that  we consume `100,000,000` short urls one day, then the
-sequence counter can last for `2 ** 63 / 100000000 / 365 = 252695124` years.
 
 #### Short URL Length
 ----
@@ -224,14 +178,6 @@ The max string length needed for encoding `2 ** 63` integers will be **11**.
 >>> 62 ** 11
 52036560683837093888L
 ```
-
-#### Grant
-----
-After setting up the databases and before running **shortme**, make sure that
-the corresponding user and password has been granted. After logging in mysql console, run following sql statement:
-* `grant insert, delete on sequence.* to 'sequence'@'%' identified by 'sequence'`
-* `grant insert on shortme.* to 'shortme_w'@'%' identified by 'shortme_w'`
-* `grant select on shortme.* to 'shortme_r'@'%' identified by 'shortme_r'`
 
 #### Run
 ----
@@ -252,93 +198,6 @@ generate sequence. After splitting sequence db from one to more, we can use
 databases can be used as one. As for load balance algorithm, i think **round
 robin** is good enough for this situation.
 
-In two databases situation, we should add the following configuration to each
- database configuration file.
-* First database
-
-```
-auto_increment_offset 1
-auto_increment_increment 2
-```
-
-* Second databse
-
-```
-auto_increment_offset 2
-auto_increment_increment 2
-```
-
-Then each time to generate a sequence counter, we can execute below sql
-statement:  
-`replace into sequence(stub) values("sequence")`
-
-In cases we use three databases as sequence counter generator, we should
-insert a record for each table in two databases.
-* First database
-
-```
-auto_increment_offset 1
-auto_increment_increment 3
-```
-
-* Second database
-
-```
-auto_increment_offset 2
-auto_increment_increment 3
-```
-
-* Third database
-
-```
-auto_increment_offset 3
-auto_increment_increment 3
-```
-
-Then each time to generate a sequence counter, we can execute below sql
-statement:  
-`replace into sequence(stub) values("sequence")`
-
-Ok, i think you get the point. When using `N` databases to generate sequence
-counter, configuration for each database configuration file will just
-like below:
-
-```
-for i := range N {
-    add "auto_increment_offset i" to config file
-    add "auto_increment_increment N" to config file
-}
-
-```
-So, sequence generator can be horizontally scalable.
-
-#### Shard
-----
-With short urls increasing, many records are stored in one table. This
- is not an optimal mysql practice. In this case we can simply shard table to
- bypass this problem.
-
-For example, we can shard according to the **base integer** using **modula hash
- algorithm**. This has a good distribution between tables. We can use **100**
- **short** tables with names like **short_00/short_01/short_02/..
- ./short_99**. we can use pseudo code blow to determine which is the
- table to store the short url record.
-
- ```
- baseInteger := sequence.NextSequence()
- tableName := fmt.Sprintf("short_%s", baseInteger % 100)
- ```
-
- There are many table sharding algorithms, we can shard table according to
- range id, user name and so on. If we use user name as the criteria to shard
- table, we can do some aggregate algorithm like how many records a user has
- created easily. This may also has some drawbacks such as if user **Lily**
- and user **Lucy** are sharded to different tables and **Lily** shorts about
- **1k** urls **Lucy** shorts about **1M** urls, then we may encounter the
- unbalance hash problem, i.e., some tables contains more records than others.
-
-In conclusion, there are many factors to consider before we can make a
-decision which hash algorithm to use.
 
 #### Statistics
 ----
@@ -356,9 +215,3 @@ server such as **Nginx**. Under this way, the statistics info can be analysed
 self phone. This remains to be tested more meticulous.  
 * One demand about customizing the short url can not be done easily currently
  in **shortme** according to the id generation logic. Let's make it happen. :)
-
-### Orange Juice
----
-I like drinking orange juice. I will appreciate that if you can give me a cup of orange juice. :)
-
-<img src="WeChatPay.png" height="20%" width="20%"> <img src="AliPay.jpeg" height="20%" width="20%">

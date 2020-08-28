@@ -4,9 +4,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/andyxning/shortme/conf"
-	"github.com/andyxning/shortme/web/api"
-	"github.com/andyxning/shortme/web/www"
+	"doodod.com/doodod/shortme/conf"
+	"doodod.com/doodod/shortme/web/api"
+	"doodod.com/doodod/shortme/web/www"
 
 	"github.com/gorilla/mux"
 )

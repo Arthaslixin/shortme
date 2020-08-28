@@ -1,109 +1,84 @@
 package short
 
 import (
-	"database/sql"
+	"context"
+	"doodod.com/doodod/shortme/base"
+	"doodod.com/doodod/shortme/conf"
 	"errors"
-	"fmt"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	_ "go.mongodb.org/mongo-driver/mongo/readpref"
 	"log"
-
-	"github.com/andyxning/shortme/base"
-	"github.com/andyxning/shortme/conf"
-	"github.com/andyxning/shortme/sequence"
-	_ "github.com/andyxning/shortme/sequence/db"
-	_ "github.com/go-sql-driver/mysql"
+	"os"
+	"sync"
+	"time"
 )
 
-type shorter struct {
-	readDB   *sql.DB
-	writeDB  *sql.DB
-	sequence sequence.Sequence
+var sequencesMu sync.RWMutex
+
+type shorter struct{}
+
+type ShoutUrlSchema struct {
+	Id         primitive.ObjectID `bson:"_id"`
+	LongURL    string             `bson:"long_url"`
+	ShortURL   string             `bson:"short_url"`
+	CreateTime int                `bson:"create_time"`
 }
 
-// connect will panic when it can not connect to DB server.
-func (shorter *shorter) mustConnect() {
-	db, err := sql.Open("mysql", conf.Conf.ShortDB.ReadDSN)
-	if err != nil {
-		log.Panicf("short read db open error. %v", err)
-	}
-
-	err = db.Ping()
-	if err != nil {
-		log.Panicf("short read db ping error. %v", err)
-	}
-
-	db.SetMaxIdleConns(conf.Conf.ShortDB.MaxIdleConns)
-	db.SetMaxOpenConns(conf.Conf.ShortDB.MaxOpenConns)
-
-	shorter.readDB = db
-
-	db, err = sql.Open("mysql", conf.Conf.ShortDB.WriteDSN)
-	if err != nil {
-		log.Panicf("short write db open error. %v", err)
-	}
-
-	err = db.Ping()
-	if err != nil {
-		log.Panicf("short write db ping error. %v", err)
-	}
-
-	db.SetMaxIdleConns(conf.Conf.ShortDB.MaxIdleConns)
-	db.SetMaxOpenConns(conf.Conf.ShortDB.MaxOpenConns)
-
-	shorter.writeDB = db
+type SequenceSchema struct {
+	Id primitive.ObjectID `bson:"_id"`
+	TP string             `bson:"tp"`
+	ID int                `bson:"id"`
 }
 
-// initSequence will panic when it can not open the sequence successfully.
-func (shorter *shorter) mustInitSequence() {
-	sequence, err := sequence.GetSequence("db")
-	if err != nil {
-		log.Panicf("get sequence instance error. %v", err)
-	}
+func (shorter *shorter) Connect() (ctx context.Context, client *mongo.Client) {
+	to := 5 * time.Second
+	opts := options.ClientOptions{ConnectTimeout: &to}
+	opts.SetDirect(true)
+	env := os.Getenv("ENV_TYPE")
+	var addr string
+	// 你的MongoUri
+	addr = "mongodb://"
+	opts.ApplyURI(addr)
+	client, _ = mongo.Connect(context.TODO(), &opts)
 
-	err = sequence.Open()
-	if err != nil {
-		log.Panicf("open sequence instance error. %v", err)
-	}
-
-	shorter.sequence = sequence
+	ctx = context.TODO()
+	_ = client.Connect(ctx)
+	return ctx, client
 }
 
-func (shorter *shorter) close() {
-	if shorter.readDB != nil {
-		shorter.readDB.Close()
-		shorter.readDB = nil
-	}
+func (shorter *shorter) NextSequence() (sequence uint64, err error) {
+	sequencesMu.RLock()
+	defer sequencesMu.RUnlock()
+	ctx, client := shorter.Connect()
+	collection := client.Database("db").Collection("auto_incr_id")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var result SequenceSchema
 
-	if shorter.writeDB != nil {
-		shorter.writeDB.Close()
-		shorter.writeDB = nil
+	err = collection.FindOneAndUpdate(ctx, bson.M{"tp": "short_url_sequence"}, bson.M{"$inc": bson.M{"id": 1}}).Decode(&result)
+	if err != nil {
+		log.Fatal(err)
+		return 0, err
 	}
+	sequence = uint64(result.ID)
+	return sequence, nil
 }
 
 func (shorter *shorter) Expand(shortURL string) (longURL string, err error) {
-	selectSQL := fmt.Sprintf(`SELECT long_url FROM short WHERE short_url=?`)
+	ctx, client := shorter.Connect()
+	collection := client.Database("db").Collection("short_url")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var result ShoutUrlSchema
 
-	var rows *sql.Rows
-	rows, err = shorter.readDB.Query(selectSQL, shortURL)
+	err = collection.FindOne(ctx, bson.D{{"short_url", shortURL}}).Decode(&result)
 	if err != nil {
-		log.Printf("short read db query error. %v", err)
-		return "", errors.New("short read db query error")
+		log.Fatal(err)
 	}
-
-	defer rows.Close()
-
-	for rows.Next() {
-		err = rows.Scan(&longURL)
-		if err != nil {
-			log.Printf("short read db query rows scan error. %v", err)
-			return "", errors.New("short read db query rows scan error")
-		}
-	}
-
-	err = rows.Err()
-	if err != nil {
-		log.Printf("short read db query rows iterate error. %v", err)
-		return "", errors.New("short read db query rows iterate error")
-	}
+	longURL = result.LongURL
 
 	return longURL, nil
 }
@@ -111,7 +86,7 @@ func (shorter *shorter) Expand(shortURL string) (longURL string, err error) {
 func (shorter *shorter) Short(longURL string) (shortURL string, err error) {
 	for {
 		var seq uint64
-		seq, err = shorter.sequence.NextSequence()
+		seq, err = shorter.NextSequence()
 		if err != nil {
 			log.Printf("get next sequence error. %v", err)
 			return "", errors.New("get next sequence error")
@@ -125,29 +100,22 @@ func (shorter *shorter) Short(longURL string) (shortURL string, err error) {
 		}
 	}
 
-	insertSQL := fmt.Sprintf(`INSERT INTO short(long_url, short_url) VALUES(?, ?)`)
+	ctx, client := shorter.Connect()
+	collection := client.Database("db").Collection("short_url")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	//var result ShoutUrlSchema
 
-	var stmt *sql.Stmt
-	stmt, err = shorter.writeDB.Prepare(insertSQL)
+	_, err = collection.InsertOne(ctx,
+		bson.D{
+			{"long_url", longURL},
+			{"short_url", shortURL},
+			{"create_time", time.Now().Unix()}})
+
 	if err != nil {
-		log.Printf("short write db prepares error. %v", err)
-		return "", errors.New("short write db prepares error")
+		log.Fatal(err)
 	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(longURL, shortURL)
-	if err != nil {
-		log.Printf("short write db insert error. %v", err)
-		return "", errors.New("short write db insert error")
-	}
-
 	return shortURL, nil
 }
 
 var Shorter shorter
-
-func Start() {
-	Shorter.mustConnect()
-	Shorter.mustInitSequence()
-	log.Println("shorter starts")
-}

@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/andyxning/shortme/conf"
-	"github.com/andyxning/shortme/short"
-	"github.com/andyxning/shortme/web"
+	"doodod.com/doodod/shortme/conf"
+	"doodod.com/doodod/shortme/web"
 )
 
 func main() {
-	cfgFile := flag.String("c", "config.conf", "configuration file")
+	env := os.Getenv("ENV_TYPE")
+	var cfgFile *string
+	cfgFile = flag.String("c", "config.conf", "configuration file")
+
 	version := flag.Bool("v", false, "Version")
 
 	flag.Parse()
@@ -23,9 +25,6 @@ func main() {
 
 	// parse config
 	conf.MustParseConfig(*cfgFile)
-
-	// short service
-	short.Start()
 
 	// api
 	web.Start()
